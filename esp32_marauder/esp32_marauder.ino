@@ -272,16 +272,23 @@ void setup()
 
         case 'w':  // Marauder
           goto continue_to_marauder;
+
+        case 'x':  // Normal Marauder
+          goto continue_to_marauder_normal;
       }
     }
   }
+  continue_to_marauder_normal:;
+  // Change baudrate 230400 -> 115200
+  Serial.end();
+  Serial.begin(115200);
   continue_to_marauder:;
   #else
   Serial.begin(115200);
+  #endif
 
   while(!Serial)
     delay(10);
-  #endif
 
   Serial.println("ESP-IDF version is: " + String(esp_get_idf_version()));
 
