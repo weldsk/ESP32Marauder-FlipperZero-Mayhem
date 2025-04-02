@@ -16,7 +16,7 @@ void EvilPortal::setup() {
 
   html_files->add("Back");
 
-  #ifdef HAS_SD
+  #if defined(HAS_SD) || defined(HAS_SD_MMC)
     if (sd_obj.supported) {
       sd_obj.listDirToLinkedList(html_files, "/", "html");
 
@@ -30,7 +30,7 @@ bool EvilPortal::begin(LinkedList<ssid>* ssids, LinkedList<AccessPoint>* access_
     return false;
   if (!this->setHtml())
     return false;
-    
+
   startPortal();
 
   return true;
@@ -92,7 +92,7 @@ bool EvilPortal::setHtml() {
     return true;
   }
   Serial.println("Setting HTML...");
-  #ifdef HAS_SD
+  #if defined(HAS_SD) || defined(HAS_SD_MMC)
     File html_file = sd_obj.getFile("/" + this->target_html_name);
   #else
     File html_file;
@@ -143,7 +143,7 @@ bool EvilPortal::setAP(LinkedList<ssid>* ssids, LinkedList<AccessPoint>* access_
   // If there are no SSIDs and there are no APs selected, pull from file
   // This means the file is last resort
   if ((ssids->size() <= 0) && (temp_ap_name == "")) {
-    #ifdef HAS_SD
+    #if defined(HAS_SD) || defined(HAS_SD_MMC)
       File ap_config_file = sd_obj.getFile("/ap.config.txt");
     #else
       File ap_config_file;
@@ -159,7 +159,7 @@ bool EvilPortal::setAP(LinkedList<ssid>* ssids, LinkedList<AccessPoint>* access_
     }
     // Config file good. Proceed
     else {
-      // ap name too long. return false        
+      // ap name too long. return false
       if (ap_config_file.size() > MAX_AP_NAME_SIZE) {
         #ifdef HAS_SCREEN
           this->sendToDisplay("The given AP name is too large.");

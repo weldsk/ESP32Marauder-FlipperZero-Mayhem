@@ -52,9 +52,8 @@ struct AccessPoint {
   uint8_t bssid[6];
   bool selected;
   LinkedList<char>* beacon;
-  int8_t rssi;
+  char rssi;
   LinkedList<uint16_t>* stations;
-  uint16_t packets;
 };
 
 class CaptiveRequestHandler : public AsyncWebHandler {

@@ -6,7 +6,13 @@
 #include "configs.h"
 
 #include "settings.h"
+#ifdef HAS_SD
 #include "SD.h"
+#endif
+#ifdef HAS_SD_MMC
+#include "FS.h"                // SD Card ESP32
+#include "SD_MMC.h"            // SD Card ESP32
+#endif
 #include "Buffer.h"
 #ifdef HAS_SCREEN
   #include "Display.h"

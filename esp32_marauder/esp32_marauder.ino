@@ -1,8 +1,6 @@
 /* FLASH SETTINGS
-Board: LOLIN D32
-Flash Frequency: 80MHz
-Partition Scheme: Minimal SPIFFS
-https://www.online-utility.org/image/convert/to/XBM
+Board: ESP32 Dev Module
+Check: https://github.com/eried/flipperzero-mayhem/wiki/Compilation-of-the-firmware#board-settings
 */
 
 #include "configs.h"
@@ -27,6 +25,35 @@ https://www.online-utility.org/image/convert/to/XBM
   #include "GpsInterface.h"
 #endif
 
+#if defined(MAYHEM)
+#include "FS.h"                // SD Card ESP32
+#include "SD_MMC.h"            // SD Card ESP32
+#include "esp_camera.h"
+#include "soc/soc.h"           // Disable brownout problems
+#include "soc/rtc_cntl_reg.h"  // Disable brownout problems
+#include "driver/rtc_io.h"
+
+// Pin definition for CAMERA_MODEL_AI_THINKER
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+bool camera_initialized = false;
+#endif
 #include "Assets.h"
 #include "WiFiScan.h"
 #ifdef HAS_SD
@@ -59,7 +86,7 @@ https://www.online-utility.org/image/convert/to/XBM
 
 #ifdef HAS_BUTTONS
   #include "Switches.h"
-  
+
   #if (U_BTN >= 0)
     Switches u_btn = Switches(U_BTN, 1000, U_PULL);
   #endif
@@ -97,7 +124,7 @@ CommandLine cli_obj;
   MenuFunctions menu_function_obj;
 #endif
 
-#ifdef HAS_SD
+#if defined(HAS_SD) || defined(HAS_SD_MMC)
   SDInterface sd_obj;
 #endif
 
@@ -129,7 +156,7 @@ void backlightOn() {
     #ifdef MARAUDER_MINI
       digitalWrite(TFT_BL, LOW);
     #endif
-  
+
     #ifndef MARAUDER_MINI
       digitalWrite(TFT_BL, HIGH);
     #endif
@@ -141,55 +168,120 @@ void backlightOff() {
     #ifdef MARAUDER_MINI
       digitalWrite(TFT_BL, HIGH);
     #endif
-  
+
     #ifndef MARAUDER_MINI
       digitalWrite(TFT_BL, LOW);
     #endif
   #endif
 }
 
+void motion_detection_setup();
+void motion_detection_loop();
+void qr_reader_setup();
+void qr_reader_loop();
+void cam_stream_setup();
+void cam_stream_loop();
+void nanny_cam_setup();
+void nanny_cam_loop();
+void morse_setup();
+void morse_loop();
+
 void setup()
 {
-  //esp_spiram_init();
-
   #ifdef defined(MARAUDER_M5STICKC) && !defined(MARAUDER_M5STICKCP2)
     axp192_obj.begin();
+  #endif
+
+  #if defined(MAYHEM)
+
+  // Start with the flashlight off
+  pinMode(4, OUTPUT);
+  digitalWrite(4, LOW);
+
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
   #endif
 
   #if defined(MARAUDER_M5STICKCP2) // Prevent StickCP2 from turning off when disconnect USB cable
     pinMode(POWER_HOLD_PIN, OUTPUT);
     digitalWrite(POWER_HOLD_PIN, HIGH);
   #endif
-  
+
   #ifdef HAS_SCREEN
     pinMode(TFT_BL, OUTPUT);
   #endif
-  
+
   backlightOff();
 #if BATTERY_ANALOG_ON == 1
   pinMode(BATTERY_PIN, OUTPUT);
   pinMode(CHARGING_PIN, INPUT);
 #endif
-  
+
   // Preset SPI CS pins to avoid bus conflicts
   #ifdef HAS_SCREEN
     digitalWrite(TFT_CS, HIGH);
   #endif
-  
+
   #ifdef HAS_SD
     pinMode(SD_CS, OUTPUT);
 
     delay(10);
-  
+
     digitalWrite(SD_CS, HIGH);
 
     delay(10);
   #endif
 
+  #if defined(MAYHEM)
+  Serial.begin(230400);
+
+  unsigned long waitForStreamMode = millis() + 3000;
+
+  while (waitForStreamMode > millis()) {
+    if (Serial.available())  // if we receive anything, just switch to another mode
+    {
+      switch (Serial.read()) {
+        case 'q':  // QR code reader mode
+          qr_reader_setup();
+          for (;;)
+            qr_reader_loop();
+
+        case 'm':  // Motion detection
+          motion_detection_setup();
+          for (;;)
+            motion_detection_loop();
+
+        case 'c':  // Camera stream
+          cam_stream_setup();
+          for (;;)
+            cam_stream_loop();
+
+        case 'n':  // Nanny cam
+          nanny_cam_setup();
+          for (;;)
+            nanny_cam_loop();
+
+        case '.':  // Morse flasher
+          morse_setup();
+          for (;;)
+            morse_loop();
+
+        /*case 'e':  // Evil portal
+          evilportal_setup();
+          for (;;)
+            evilportal_loop();*/
+
+        case 'w':  // Marauder
+          goto continue_to_marauder;
+      }
+    }
+  }
+  continue_to_marauder:;
+  #else
   Serial.begin(115200);
 
   while(!Serial)
     delay(10);
+  #endif
 
   Serial.println("ESP-IDF version is: " + String(esp_get_idf_version()));
 
@@ -235,15 +327,15 @@ void setup()
     #endif
 
     //display_obj.clearScreen();
-  
+
     //display_obj.tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  
+
     //display_obj.tft.println(text_table0[0]);
-  
+
     //delay(2000);
-  
+
     //display_obj.tft.println("Marauder " + display_obj.version_number + "\n");
-  
+
     //display_obj.tft.println(text_table0[1]);
   #endif
 
@@ -256,7 +348,7 @@ void setup()
   //#endif
 
   buffer_obj = Buffer();
-  #if defined(HAS_SD)
+  #if defined(HAS_SD) || defined(HAS_SD_MMC)
     // Do some SD stuff
     if(sd_obj.initSD()) {
       #ifdef HAS_SCREEN
@@ -282,7 +374,7 @@ void setup()
   #ifdef HAS_BATTERY
     battery_obj.RunSetup();
   #endif
-  
+
   #ifdef HAS_SCREEN
     //display_obj.tft.println(F(text_table0[5]));
   #endif
@@ -324,9 +416,9 @@ void setup()
 
   #ifdef HAS_SCREEN
     //display_obj.tft.println(F(text_table0[8]));
-  
+
     display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  
+
     //delay(2000);
   #endif
 
@@ -335,7 +427,7 @@ void setup()
   #endif
 
   wifi_scan_obj.StartScan(WIFI_SCAN_OFF);
-  
+
   Serial.println(F("CLI Ready"));
   cli_obj.RunSetup();
 }
@@ -372,7 +464,7 @@ void loop()
   #else
     bool do_draw = false;
   #endif*/
-  
+
   //if ((!do_draw) && (wifi_scan_obj.currentScanMode != ESP_UPDATE))
   //{
   cli_obj.main(currentTime);
@@ -385,9 +477,9 @@ void loop()
   #ifdef HAS_GPS
     gps_obj.main();
   #endif
-  
+
   // Detect SD card
-  #if defined(HAS_SD)
+  #if defined(HAS_SD) || defined(HAS_SD_MMC)
     sd_obj.main();
   #endif
 
@@ -437,7 +529,7 @@ void loop()
     #else
       led_obj.main(currentTime);
     #endif
-    
+
     //cli_obj.main(currentTime);
     delay(1);
   }*/

@@ -178,7 +178,6 @@ class MenuFunctions
     Menu htmlMenu;
     Menu miniKbMenu;
     Menu saveFileMenu;
-    Menu apInfoMenu;
 
     // Bluetooth menu stuff
     Menu bluetoothSnifferMenu;

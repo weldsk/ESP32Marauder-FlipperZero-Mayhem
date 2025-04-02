@@ -3,7 +3,7 @@
 
 
 bool SDInterface::initSD() {
-  #ifdef HAS_SD
+  #if defined(HAS_SD) || defined(HAS_SD_MMC)
     String display_string = "";
 
     #ifdef KIT
@@ -18,6 +18,7 @@ bool SDInterface::initSD() {
       }
     #endif
 
+    #ifdef HAS_SD
     pinMode(SD_CS, OUTPUT);
 
     delay(10);
@@ -55,7 +56,23 @@ bool SDInterface::initSD() {
       //    Serial.println(F("SD: UNKNOWN Card Mounted"));
 
       this->cardSizeMB = SD.cardSize() / (1024 * 1024);
-    
+
+    #else
+      if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT)) {
+        Serial.println(F("Failed to mount SD Card"));
+        this->supported = false;
+        return false;
+      }
+      uint8_t cardType = SD_MMC.cardType();
+      if (cardType == CARD_NONE) {
+        Serial.println("No MicroSD Card found");
+        this->supported = false;
+        return false;
+      } else {
+        this->supported = true;
+        this->cardType = cardType;
+      this->cardSizeMB = SD_MMC.cardSize() / (1024 * 1024);
+    #endif
       //Serial.printf("SD Card Size: %lluMB\n", this->cardSizeMB);
 
       if (this->supported) {
@@ -69,21 +86,30 @@ bool SDInterface::initSD() {
             sz[i] = '0' + (this->cardSizeMB % 10);
             display_string.concat((String)sz[i]);
         }
-  
+
         this->card_sz = sz;
       }
 
+      #ifdef HAS_SD
       if (!SD.exists("/SCRIPTS")) {
         Serial.println("/SCRIPTS does not exist. Creating...");
 
         SD.mkdir("/SCRIPTS");
         Serial.println("/SCRIPTS created");
       }
+      #else
+      if (!SD_MMC.exists("/SCRIPTS")) {
+        Serial.println("/SCRIPTS does not exist. Creating...");
+
+        SD_MMC.mkdir("/SCRIPTS");
+        Serial.println("/SCRIPTS created");
+      }
+      #endif
 
       this->sd_files = new LinkedList<String>();
 
       this->sd_files->add("Back");
-    
+
       return true;
   }
 
@@ -95,7 +121,11 @@ bool SDInterface::initSD() {
 
 File SDInterface::getFile(String path) {
   if (this->supported) {
+    #ifdef HAS_SD
     File file = SD.open(path, FILE_READ);
+    #else
+    File file = SD_MMC.open(path, FILE_READ);
+    #endif
 
     //if (file)
     return file;
@@ -103,7 +133,11 @@ File SDInterface::getFile(String path) {
 }
 
 bool SDInterface::removeFile(String file_path) {
+  #ifdef HAS_SD
   if (SD.remove(file_path))
+  #else
+  if (SD_MMC.remove(file_path))
+  #endif
     return true;
   else
     return false;
@@ -111,7 +145,11 @@ bool SDInterface::removeFile(String file_path) {
 
 void SDInterface::listDirToLinkedList(LinkedList<String>* file_names, String str_dir, String ext) {
   if (this->supported) {
+    #ifdef HAS_SD
     File dir = SD.open(str_dir);
+    #else
+    File dir = SD_MMC.open(str_dir);
+    #endif
     while (true)
     {
       File entry = dir.openNextFile();
@@ -137,7 +175,11 @@ void SDInterface::listDirToLinkedList(LinkedList<String>* file_names, String str
 
 void SDInterface::listDir(String str_dir){
   if (this->supported) {
+    #ifdef HAS_SD
     File dir = SD.open(str_dir);
+    #else
+    File dir = SD_MMC.open(str_dir);
+    #endif
     while (true)
     {
       File entry = dir.openNextFile();
@@ -164,10 +206,14 @@ void SDInterface::runUpdate() {
     display_obj.tft.setCursor(0, TFT_HEIGHT / 3);
     display_obj.tft.setTextSize(1);
     display_obj.tft.setTextColor(TFT_WHITE);
-  
+
     display_obj.tft.println(F(text15));
   #endif
+  #ifdef HAS_SD
   File updateBin = SD.open("/update.bin");
+  #else
+  File updateBin = SD_MMC.open("/update.bin");
+  #endif
   if (updateBin) {
     if(updateBin.isDirectory()){
       #ifdef HAS_SCREEN
@@ -204,13 +250,13 @@ void SDInterface::runUpdate() {
     }
 
     updateBin.close();
-    
+
       // whe finished remove the binary from sd card to indicate end of the process
     #ifdef HAS_SCREEN
       display_obj.tft.println(F(text_table2[3]));
     #endif
     Serial.println(F("rebooting..."));
-    //SD.remove("/update.bin");      
+    //SD.remove("/update.bin");
     delay(1000);
     ESP.restart();
   }
@@ -227,7 +273,7 @@ void SDInterface::runUpdate() {
 }
 
 void SDInterface::performUpdate(Stream &updateSource, size_t updateSize) {
-  if (Update.begin(updateSize)) {   
+  if (Update.begin(updateSize)) {
     #ifdef HAS_SCREEN
       display_obj.tft.println(text_table2[5] + String(updateSize));
       display_obj.tft.println(F(text_table2[6]));
