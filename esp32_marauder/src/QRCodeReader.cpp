@@ -1,5 +1,7 @@
 // Based on https://drive.google.com/file/d/1w8hJ5NhNik3qo2xl6eDrlgG4n6R4LuJ_/view
 #include "quirc.h"
+#include "../configs.h"
+#include <esp_camera.h>
 
 struct QRCodeData
 {
@@ -10,16 +12,78 @@ struct QRCodeData
 };
 
 // creating a task handle
-TaskHandle_t QRCodeReader_Task; 
+static TaskHandle_t QRCodeReader_Task;
 
-struct quirc *q = NULL;
-uint8_t *image = NULL;  
-camera_fb_t * fb = NULL;
-struct quirc_code code;
-struct quirc_data data;
-quirc_decode_error_t err;
-struct QRCodeData qrCodeData;  
-String QRCodeResult = "";
+static struct quirc *q = NULL;
+static uint8_t *image = NULL;
+static camera_fb_t * fb = NULL;
+static struct quirc_code code;
+static struct quirc_data data;
+static quirc_decode_error_t err;
+static struct QRCodeData qrCodeData;
+static String QRCodeResult = "";
+
+static void dumpData(const struct quirc_data *data)
+{
+  /*Serial.printf("Version: %d\n", data->version);
+  Serial.printf("ECC level: %c\n", "MLHQ"[data->ecc_level]);
+  Serial.printf("Mask: %d\n", data->mask);
+  Serial.printf("Length: %d\n", data->payload_len);*/
+  Serial.printf("Payload: %s\n", data->payload);
+
+  QRCodeResult = (const char *)data->payload;
+}
+
+static void QRCodeReader( void * pvParameters ){
+  /* ---------------------------------------- */
+  Serial.println("Waiting for QR code");
+  //Serial.print("QRCodeReader running on core ");
+  //Serial.println(xPortGetCoreID());
+  //Serial.println();
+  /* ---------------------------------------- */
+
+  /* ---------------------------------------- Loop to read QR Code in real time. */
+  while(1){
+      q = quirc_new();
+      if (q == NULL){
+        Serial.print("can't create quirc object\r\n");
+        continue;
+      }
+
+      fb = esp_camera_fb_get();
+      if (!fb)
+      {
+        Serial.println("Camera capture failed");
+        continue;
+      }
+
+      quirc_resize(q, fb->width, fb->height);
+      image = quirc_begin(q, NULL, NULL);
+      memcpy(image, fb->buf, fb->len);
+      quirc_end(q);
+
+      int count = quirc_count(q);
+      if (count > 0) {
+        quirc_extract(q, 0, &code);
+        err = quirc_decode(&code, &data);
+
+        if (err){
+          Serial.println("Decoding FAILED");
+          QRCodeResult = "Decoding FAILED";
+        } else {
+          //Serial.printf("Decoding successful:\n");
+          dumpData(&data);
+        }
+        Serial.println();
+      }
+
+      esp_camera_fb_return(fb);
+      fb = NULL;
+      image = NULL;
+      quirc_destroy(q);
+  }
+  /* ---------------------------------------- */
+}
 
 void qr_reader_setup() {
   // camera init
@@ -48,7 +112,7 @@ void qr_reader_setup() {
   config.frame_size = FRAMESIZE_QVGA;
   config.jpeg_quality = 15;
   config.fb_count = 1;
-  
+
   /*#if defined(CAMERA_MODEL_ESP_EYE)
     pinMode(13, INPUT_PULLUP);
     pinMode(14, INPUT_PULLUP);
@@ -59,10 +123,10 @@ void qr_reader_setup() {
     Serial.printf("Camera init failed with error 0x%x", err);
     ESP.restart();
   }
-  
+
   sensor_t * s = esp_camera_sensor_get();
   s->set_framesize(s, FRAMESIZE_QVGA);
-  
+
   //Serial.println("Configure and initialize the camera successfully.");
   //Serial.println();
   /* ---------------------------------------- */
@@ -81,66 +145,4 @@ void qr_reader_setup() {
 
 void qr_reader_loop() {
   delay(1);
-}
-
-void QRCodeReader( void * pvParameters ){
-  /* ---------------------------------------- */
-  Serial.println("Waiting for QR code");
-  //Serial.print("QRCodeReader running on core ");
-  //Serial.println(xPortGetCoreID());
-  //Serial.println();
-  /* ---------------------------------------- */
-
-  /* ---------------------------------------- Loop to read QR Code in real time. */
-  while(1){
-      q = quirc_new();
-      if (q == NULL){
-        Serial.print("can't create quirc object\r\n");  
-        continue;
-      }
-    
-      fb = esp_camera_fb_get();
-      if (!fb)
-      {
-        Serial.println("Camera capture failed");
-        continue;
-      }   
-      
-      quirc_resize(q, fb->width, fb->height);
-      image = quirc_begin(q, NULL, NULL);
-      memcpy(image, fb->buf, fb->len);
-      quirc_end(q);
-      
-      int count = quirc_count(q);
-      if (count > 0) {
-        quirc_extract(q, 0, &code);
-        err = quirc_decode(&code, &data);
-    
-        if (err){
-          Serial.println("Decoding FAILED");
-          QRCodeResult = "Decoding FAILED";
-        } else {
-          //Serial.printf("Decoding successful:\n");
-          dumpData(&data);
-        } 
-        Serial.println();
-      } 
-      
-      esp_camera_fb_return(fb);
-      fb = NULL;
-      image = NULL;  
-      quirc_destroy(q);
-  }
-  /* ---------------------------------------- */
-}
-
-void dumpData(const struct quirc_data *data)
-{
-  /*Serial.printf("Version: %d\n", data->version);
-  Serial.printf("ECC level: %c\n", "MLHQ"[data->ecc_level]);
-  Serial.printf("Mask: %d\n", data->mask);
-  Serial.printf("Length: %d\n", data->payload_len);*/
-  Serial.printf("Payload: %s\n", data->payload);
-  
-  QRCodeResult = (const char *)data->payload;
 }

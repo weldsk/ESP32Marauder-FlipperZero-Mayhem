@@ -1,51 +1,15 @@
 #include <WiFi.h>
-#include "esp_camera.h"
+#include <esp_camera.h>
+#include "../configs.h"
 
 // Replace with your network credentials
-const char* nanny_ssid = "Flipper0";
-const char* nanny_password = "12345678";
+static const char* nanny_ssid = "Flipper0";
+static const char* nanny_password = "12345678";
 
 // Create an instance of the nannyServer
-WiFiServer nannyServer(80);
+static WiFiServer nannyServer(80);
 
-void nanny_cam_setup() {
-  //Serial.begin(115200);
-
-  // Start access point
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(nanny_ssid, nanny_password);
-
-
-  // Print IP address
-  IPAddress IP = WiFi.softAPIP();
-
-  // Start the camera
-  startCamera();
-
-  // Start the nannyServer
-  nannyServer.begin();
-  //Serial.println("Server started");
-
-  Serial.print("SSID: ");
-  Serial.println(nanny_ssid);
-  Serial.print("PW: ");
-  Serial.println(nanny_password);
-  Serial.print("IP: ");
-  Serial.println(IP);
-
-}
-
-void nanny_cam_loop() {
-  //Serial.print(".");
-  // Wait for a client to connect
-  WiFiClient client = nannyServer.available();
-  if (client) {
-    //Serial.println("New client connected");
-    handleStreamRequest();
-  }
-}
-
-void startCamera() {
+static void startCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -87,7 +51,7 @@ void startCamera() {
   s->set_focus(s, 0);*/
 }
 
-void handleStreamRequest() {
+static void handleStreamRequest() {
   WiFiClient client = nannyServer.available();
 
   // Send HTTP headers
@@ -121,4 +85,41 @@ void handleStreamRequest() {
   // Disconnect the client
   client.stop();
   //Serial.println("Client disconnected");
+}
+
+void nanny_cam_setup() {
+  //Serial.begin(115200);
+
+  // Start access point
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(nanny_ssid, nanny_password);
+
+
+  // Print IP address
+  IPAddress IP = WiFi.softAPIP();
+
+  // Start the camera
+  startCamera();
+
+  // Start the nannyServer
+  nannyServer.begin();
+  //Serial.println("Server started");
+
+  Serial.print("SSID: ");
+  Serial.println(nanny_ssid);
+  Serial.print("PW: ");
+  Serial.println(nanny_password);
+  Serial.print("IP: ");
+  Serial.println(IP);
+
+}
+
+void nanny_cam_loop() {
+  //Serial.print(".");
+  // Wait for a client to connect
+  WiFiClient client = nannyServer.available();
+  if (client) {
+    //Serial.println("New client connected");
+    handleStreamRequest();
+  }
 }

@@ -1,3 +1,30 @@
+#include "../configs.h"
+#include "esp_camera.h"
+
+static bool disable_dithering = false;
+static bool invert = false;
+static bool rotate90 = true;
+
+inline static bool IsDarkBit(const uint8_t bit) {
+  return (invert ^ (bit < 128));
+}
+
+static void DitherImage(camera_fb_t* fb) {
+  for (uint8_t y = 0; y < fb->height; ++y) {
+    for (uint8_t x = 0; x < fb->width; ++x) {
+      size_t current = (y * fb->width) + x;
+      uint8_t oldpixel = fb->buf[current];
+      uint8_t newpixel = oldpixel >= 128 ? 255 : 0;
+      fb->buf[current] = newpixel;
+      uint8_t quant_error = oldpixel - newpixel;
+      fb->buf[(y * fb->width) + x + 1] = fb->buf[(y * fb->width) + x + 1] + quant_error * 7 / 16;
+      fb->buf[(y + 1 * fb->width) + x - 1] = fb->buf[(y + 1 * fb->width) + x - 1] + quant_error * 3 / 16;
+      fb->buf[(y + 1 * fb->width) + x] = fb->buf[(y + 1 * fb->width) + x] + quant_error * 5 / 16;
+      fb->buf[(y + 1 * fb->width) + x + 1] = fb->buf[(y + 1 * fb->width) + x + 1] + quant_error * 1 / 16;
+    }
+  }
+}
+
 // from: https://github.com/Z4urce/flipperzero-camera/blob/main/esp32_firmware/esp32_cam_uart_stream/esp32_cam_uart_stream.ino
 void cam_stream_setup() {
   // camera init
@@ -37,10 +64,6 @@ void cam_stream_setup() {
   sensor_t* s = esp_camera_sensor_get();
   s->set_contrast(s, 2);
 }
-
-bool disable_dithering = false;
-bool invert = false;
-bool rotate90 = true;
 
 void cam_stream_loop() {
   bool stop_stream = false;
@@ -147,24 +170,4 @@ void cam_stream_loop() {
   esp_camera_fb_return(fb);
   fb = NULL;
   delay(50);
-}
-
-inline bool IsDarkBit(const uint8_t bit) {
-  return (invert ^ (bit < 128));
-}
-
-void DitherImage(camera_fb_t* fb) {
-  for (uint8_t y = 0; y < fb->height; ++y) {
-    for (uint8_t x = 0; x < fb->width; ++x) {
-      size_t current = (y * fb->width) + x;
-      uint8_t oldpixel = fb->buf[current];
-      uint8_t newpixel = oldpixel >= 128 ? 255 : 0;
-      fb->buf[current] = newpixel;
-      uint8_t quant_error = oldpixel - newpixel;
-      fb->buf[(y * fb->width) + x + 1] = fb->buf[(y * fb->width) + x + 1] + quant_error * 7 / 16;
-      fb->buf[(y + 1 * fb->width) + x - 1] = fb->buf[(y + 1 * fb->width) + x - 1] + quant_error * 3 / 16;
-      fb->buf[(y + 1 * fb->width) + x] = fb->buf[(y + 1 * fb->width) + x] + quant_error * 5 / 16;
-      fb->buf[(y + 1 * fb->width) + x + 1] = fb->buf[(y + 1 * fb->width) + x + 1] + quant_error * 1 / 16;
-    }
-  }
 }

@@ -1,3 +1,4 @@
+#include <ArduinoJson.h>
 // Using EloquentEsp32cam library
 #include <eloquent_esp32cam.h>
 #include <eloquent_esp32cam/motion/detection.h>
@@ -33,7 +34,7 @@ void motion_detection_setup() {
   Serial.println("Awaiting for motion...");
 }
 
-unsigned long nextMotionAlert = 0;
+static unsigned long nextMotionAlert = 0;
 
 void motion_detection_loop() {
   // capture picture
@@ -50,7 +51,7 @@ void motion_detection_loop() {
 
   // on motion, perform action
   if (detection.triggered() && millis()>nextMotionAlert) {
-  
+
       Serial.println("Motion!");
       nextMotionAlert = millis()+1000;
   }
