@@ -26,6 +26,8 @@ Check: https://github.com/eried/flipperzero-mayhem/wiki/Compilation-of-the-firmw
 #endif
 
 #if defined(MAYHEM)
+#include "src/flipper_http.h"
+#include "src/FirmwareSwitcher.h"
 #include "FS.h"                // SD Card ESP32
 #include "SD_MMC.h"            // SD Card ESP32
 #include "esp_camera.h"
@@ -213,81 +215,77 @@ void setup()
     delay(10);
   #endif
 
-  #if defined(MAYHEM)
+  #ifdef MAYHEM
   Serial.begin(230400);
-
-#if 0
-  FlipperHTTP* fhttp;
-#endif
-  unsigned long waitForStreamMode = millis() + 3000;
+  const unsigned long waitForStreamMode = millis() + 3000;
+  char mode = '\0';
   while (waitForStreamMode > millis()) {
-    if (Serial.available())  // if we receive anything, just switch to another mode
-    {
-      switch (Serial.read()) {
-        case 'q':  // QR code reader mode
-          qr_reader_setup();
-          for (;;)
-            qr_reader_loop();
-
-        case 'm':  // Motion detection
-          motion_detection_setup();
-          for (;;)
-            motion_detection_loop();
-
-        case 'c':  // Camera stream
-          cam_stream_setup();
-          for (;;)
-            cam_stream_loop();
-
-        case 'C':  // Camera Suite
-          #if 0
-          Serial.end();
-          delay(1000);
-          camera_suite_setup();
-          for (;;)
-            camera_suite_loop();
-          #endif
-
-        case 'H':  // Flipper HTTP
-          Serial.end();
-          delay(1000);
-          #if 0
-          fhttp = new FlipperHTTP();
-          fhttp->setup();
-          for (;;)
-            fhttp->loop();
-          #endif
-
-        case 'n':  // Nanny cam
-          nanny_cam_setup();
-          for (;;)
-            nanny_cam_loop();
-
-        case '.':  // Morse flasher
-          morse_setup();
-          for (;;)
-            morse_loop();
-
-        /*case 'e':  // Evil portal
-          evilportal_setup();
-          for (;;)
-            evilportal_loop();*/
-
-        case 'w':  // Marauder
-          goto continue_to_marauder;
-
-        case 'W':  // Normal Marauder
-          // Change baudrate 230400 -> 115200
-          Serial.end();
-          Serial.begin(115200);
-          goto continue_to_marauder;
+    if (Serial.available()) { // if we receive anything, just switch to another mode
+      int receivedSize = Serial.readBytes(&mode, 1);
+      if ((receivedSize > 0) && (mode >= 0x20) && (mode <= 0x7e))
+      {
+        break;
       }
+      mode = '\0';
+    }
+    delay(10);
+  }
+  if (mode == '\0')
+  {
+    String firmware = FirmwareSwitcher::readFirmwareName();
+    if (firmware.length() > 0)
+    {
+      mode = firmware[0];
     }
   }
-  continue_to_marauder:;
-  #else
-  Serial.begin(115200);
-  #endif
+  else
+  {
+    String nextFirmware(mode);
+    FirmwareSwitcher::writeFirmwareName(nextFirmware);
+  }
+
+  switch (mode)
+  {
+    case 'q':  // QR code reader mode
+      qr_reader_setup();
+      for (;;)
+        qr_reader_loop();
+
+    case 'm':  // Motion detection
+      motion_detection_setup();
+      for (;;)
+        motion_detection_loop();
+
+    case 'c':  // Camera stream
+      cam_stream_setup();
+      for (;;)
+        cam_stream_loop();
+
+    case 'n':  // Nanny cam
+      nanny_cam_setup();
+      for (;;)
+        nanny_cam_loop();
+    case '.':  // Morse flasher
+      morse_setup();
+      for (;;)
+        morse_loop();
+
+    case 'w':  // Marauder
+      break;
+
+    case 'H': // Flipper HTTP
+      Serial.end(true);
+      Serial.begin(115200);
+      flipper_http_setup();
+      for (;;)
+        flipper_http_loop();
+    default:
+    case 'W': // Normal Marauder
+      Serial.end(true);
+      Serial.begin(115200);
+      break;
+  }
+#endif
 
   while(!Serial)
     delay(10);
@@ -372,6 +370,8 @@ void setup()
       #endif
     }
   #endif
+
+  Serial.println("ESP-IDF version is: " + String(esp_get_idf_version()));
 
   #ifdef HAS_SCREEN
     display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);

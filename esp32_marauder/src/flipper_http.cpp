@@ -1,7 +1,7 @@
 #include "flipper_http.h"
 #include "flipper_http/FlipperHTTP.h"
 
-FlipperHTTP *flipperHttp;
+FlipperHTTP::FlipperHTTP *flipperHttp;
 
 void flipper_http_setup()
 {
@@ -9,7 +9,7 @@ void flipper_http_setup()
     {
         delete flipperHttp;
     }
-    flipperHttp = new FlipperHttp();
+    flipperHttp = new FlipperHTTP::FlipperHTTP();
     flipperHttp->setup();
 }
 
