@@ -3,7 +3,7 @@ Author: JBlanked
 Github: https://github.com/jblanked/FlipperHTTP
 Info: This library is a wrapper around the HTTPClient library and is used to communicate with the FlipperZero over serial.
 Created: 2024-09-30
-Updated: 2025-03-29
+Updated: 2025-05-03
 
 Change Log:
 - 2024-09-30: Initial commit
@@ -35,6 +35,14 @@ Change Log:
 - 2025-03-25: Check if websocket is connected
 - 2025-03-26: Updated websocket setup
 - 2025-03-29: Created a WiFiUtils class to handle WiFi functions (wifi_utils.h/cpp)
+- 2025-04-12: Added AP mode support [WIFI/AP] (wifi_ap.h/cpp)
+- 2025-04-25:
+    - Removed the uploadBytes method
+    - Added [VERSION] command to get the version of the library
+    - Handled ArduinoJson deprecation warnings
+- 2025-04-26: Updated AP mode to redirect clients to the captive portal
+- 2025-04-30: Added support for the ESP32-C5 board
+- 2025-05-03: Added deauth support for ESP32 and BW16 boards
 */
 #pragma once
 #include "certs.h"
@@ -46,10 +54,12 @@ Change Log:
 #include <ArduinoHttpClient.h>
 #include <stdint.h>
 #include <string.h>
+#include "storage.h"
 
 #define BAUD_RATE 115200
+#define FLIPPER_HTTP_VERSION "2.0"
 
-namespace FlipperHTTP
+namespace FlipperHttp
 {
 
 class FlipperHTTP
@@ -60,7 +70,7 @@ public:
     {
     }
 
-    bool load_wifi(); // Load Wifi settings from storage
+    bool loadWiFi(); // Load Wifi settings from storage
     //
     String request(
         const char *method,                   // HTTP method
@@ -71,13 +81,11 @@ public:
         int headerSize = 0                    // Number of headers
     );
     //
-    bool save_wifi(String data);                                                                                                             // Save and Load settings to and from storage
-    void setup();                                                                                                                            // Arduino setup function
-    bool stream_bytes(const char *method, String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize); // Stream bytes from server
-    bool read_serial_settings(String receivedData, bool connectAfterSave);                                                                   // Read the serial data and save the settings
-    bool upload_bytes(String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize);                     // stream bytes to server
-
-    void loop(); // Main loop for flipper-http.ino that handles all of the commands
+    bool saveWiFi(String data);                                                                                                             // Save and Load settings to and from storage
+    void setup();                                                                                                                           // Arduino setup function
+    bool streamBytes(const char *method, String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize); // Stream bytes from server
+    bool readSerialSettings(String receivedData, bool connectAfterSave);                                                                    // Read the serial data and save the settings
+    void loop();                                                                                                                            // Main loop for flipper-http.ino that handles all of the commands
 private:
     char loaded_ssid[64] = {0}; // Variable to store SSID
     char loaded_pass[64] = {0}; // Variable to store password
@@ -95,10 +103,10 @@ private:
 #else
     UART uart; // UART object to handle serial communication
 #endif
-
-    WiFiUtils wifi; // WiFiUtils object to handle WiFi connections
+    WiFiUtils wifi;         // WiFiUtils object to handle WiFi connections
+    StorageManager storage; // StorageManager object to handle storage operations
 };
 
 const PROGMEM char settingsFilePath[] = "/flipper-http.json"; // Path to the settings file in the SPIFFS file system
 
-} // namespace FlipperHTTP
+}

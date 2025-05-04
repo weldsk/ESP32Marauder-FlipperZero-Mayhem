@@ -3,43 +3,54 @@ Author: JBlanked
 Github: https://github.com/jblanked/FlipperHTTP
 Info: This library is a wrapper around the HTTPClient library and is used to communicate with the FlipperZero over tthis->uart.
 Created: 2024-09-30
-Updated: 2025-03-29
+Updated: 2025-05-03
 */
 
 #include "FlipperHTTP.h"
-#include "storage.h"
+#include "wifi_ap.h"
+#include "wifi_deauth.h"
 
-namespace FlipperHTTP
+namespace FlipperHttp
 {
 
-// Load WiFi settings from SPIFFS and attempt to connect
-bool FlipperHTTP::load_wifi()
+// Load WiFi settings
+bool FlipperHTTP::loadWiFi()
 {
-    String fileContent = file_read(settingsFilePath);
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, fileContent);
-
-    if (error)
+    if (!storage.deserialize(doc, settingsFilePath))
     {
+        this->uart.println(F("[ERROR] Failed to deserialize JSON from settings file."));
+        return false;
+    }
+
+    if (!doc["wifi_list"] || !doc["wifi_list"].is<JsonArray>())
+    {
+        this->uart.println(F("[ERROR] JSON missing 'wifi_list' or it's not an array."));
         return false;
     }
 
     JsonArray wifiList = doc["wifi_list"].as<JsonArray>();
+
     for (JsonObject wifi : wifiList)
     {
+        // Skip if no SSID or password
+        if (!wifi["ssid"] || !wifi["password"])
+            continue;
+
         const char *ssid = wifi["ssid"];
         const char *password = wifi["password"];
 
         strncpy(loaded_ssid, ssid, sizeof(loaded_ssid));
         strncpy(loaded_pass, password, sizeof(loaded_pass));
 
-        // if WiFi connects return true otherwise continue
+        // Try to connect
         if (this->wifi.connect(loaded_ssid, loaded_pass))
         {
             return true;
         }
     }
 
+    this->uart.println(F("[ERROR] No networks connected."));
     return false;
 }
 
@@ -96,16 +107,9 @@ String FlipperHTTP::request(
             this->client.println(payload);
         }
 
-        // Wait for response
-        while (this->client.connected() || this->client.available())
-        {
-            if (this->client.available())
-            {
-                String line = this->client.readStringUntil('\n');
-                response += line + "\n";
-            }
-        }
-
+        // read everything that’s in the buffer, then stop
+        while (this->client.available())
+            response += this->client.readStringUntil('\n') + "\n";
         this->client.stop();
     }
     else
@@ -114,7 +118,7 @@ String FlipperHTTP::request(
     }
 
     // Clear serial buffer to avoid any residual data
-    this->this->uart.clear_buffer();
+    this->uart.clearBuffer();
 
     return response;
 }
@@ -200,54 +204,70 @@ String FlipperHTTP::request(
     }
 
     // Clear serial buffer to avoid any residual data
-    this->uart.clear_buffer();
+    this->uart.clearBuffer();
 
     return response;
 }
 #endif
 
 // Save WiFi settings to storage
-bool FlipperHTTP::save_wifi(String jsonData)
+bool FlipperHTTP::saveWiFi(const String jsonData)
 {
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, jsonData);
-    if (error)
+    JsonDocument newEntryDoc;
+    auto err = deserializeJson(newEntryDoc, jsonData);
+    if (err)
     {
         this->uart.println(F("[ERROR] Failed to parse JSON data."));
         return false;
     }
 
-    const char *newSSID = doc["ssid"];
-    const char *newPassword = doc["password"];
-
-    // Load existing settings if they exist
-    JsonDocument existingDoc;
-    file_deserialize(existingDoc, settingsFilePath);
-
-    // Check if SSID is already saved
-    bool found = false;
-    for (JsonObject wifi : existingDoc["wifi_list"].as<JsonArray>())
+    if (!newEntryDoc["ssid"] || !newEntryDoc["password"])
     {
-        if (wifi["ssid"] == newSSID)
+        this->uart.println(F("[ERROR] JSON must contain 'ssid' and 'password'."));
+        return false;
+    }
+
+    const char *newSSID = newEntryDoc["ssid"];
+    const char *newPassword = newEntryDoc["password"];
+
+    JsonDocument settingsDoc;
+    bool hadSettings = storage.deserialize(settingsDoc, settingsFilePath);
+
+    JsonArray wifiList;
+    if (hadSettings && settingsDoc["wifi_list"] && settingsDoc["wifi_list"].is<JsonArray>())
+    {
+        // Use the existing array
+        wifiList = settingsDoc["wifi_list"].as<JsonArray>();
+    }
+    else
+    {
+        // No valid settings on disk yet → clear and create a new array
+        settingsDoc.clear();
+        wifiList = settingsDoc["wifi_list"].to<JsonArray>();
+    }
+
+    // check for duplicates
+    for (JsonObject net : wifiList)
+    {
+        if (net["ssid"] == newSSID)
         {
-            found = true;
-            break;
+            return true;
         }
     }
 
-    // Add new SSID and password if not found
-    if (!found)
-    {
-        JsonArray wifiList = existingDoc["wifi_list"].to<JsonArray>();
-        JsonObject newWifi = wifiList.add<JsonObject>();
-        newWifi["ssid"] = newSSID;
-        newWifi["password"] = newPassword;
+    // append the new network
+    JsonObject added = wifiList.add<JsonObject>();
+    added["ssid"] = newSSID;
+    added["password"] = newPassword;
 
-        // Save updated list to file
-        file_serialize(existingDoc, settingsFilePath);
+    // persist back to flash
+    if (!storage.serialize(settingsDoc, settingsFilePath))
+    {
+        this->uart.println(F("[ERROR] Failed to write settings to storage."));
+        return false;
     }
 
-    this->uart.print(F("[SUCCESS] Settings saved."));
+    this->uart.println(F("[SUCCESS] Settings saved."));
     return true;
 }
 
@@ -257,77 +277,37 @@ void FlipperHTTP::setup()
     this->uart.set_pins(0, 1);
 #endif
     this->uart.begin(115200);
-    this->uart.set_timeout(5000);
-#if defined(BOARD_PICO_W) || defined(BOARD_PICO_2W)
-    if (!LittleFS.begin())
-    {
-        if (LittleFS.format())
-        {
-            if (!LittleFS.begin())
-            {
-                this->uart.println(F("Failed to re-mount LittleFS after formatting."));
-                rp2040.reboot();
-            }
-        }
-        else
-        {
-            this->uart.println(F("File system formatting failed."));
-            rp2040.reboot();
-        }
-    }
-#elif defined(BOARD_VGM)
+    this->uart.setTimeout(5000);
+#if defined(BOARD_VGM)
     this->uart_2.set_pins(24, 21);
     this->uart_2.begin(115200);
-    this->uart_2.set_timeout(5000);
-    if (!LittleFS.begin())
-    {
-        if (LittleFS.format())
-        {
-            if (!LittleFS.begin())
-            {
-                this->uart.println(F("Failed to re-mount LittleFS after formatting."));
-                rp2040.reboot();
-            }
-        }
-        else
-        {
-            this->uart.println(F("File system formatting failed."));
-            rp2040.reboot();
-        }
-    }
+    this->uart_2.setTimeout(5000);
     this->uart_2.flush();
-#elif defined(BOARD_BW16)
-    // skip for now
-#elif defined(BOARD_MAYHEM)
-    if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT))
-    {
-        this->uart.println(F("[ERROR] SDMMC initialization failed."));
-        ESP.restart();
-    }
-#else
-    // Initialize SPIFFS
-    if (!SPIFFS.begin(true))
-    {
-        this->uart.println(F("[ERROR] SPIFFS initialization failed."));
-        ESP.restart();
-    }
 #endif
     this->use_led = true;
     this->led.start();
-    this->load_wifi(); // Load WiFi settings from SPIFFS
+    if (!storage.begin())
+    {
+        this->uart.println(F("[ERROR] Storage initialization failed."));
+    }
+    else
+    {
+        this->loadWiFi(); // Load WiFi settings
+    }
 #ifndef BOARD_BW16
     this->client.setCACert(root_ca);
 #else
     this->client.setRootCA((unsigned char *)root_ca);
 #endif
     this->uart.flush();
+    this->led.off();
 }
 
 #ifdef BOARD_BW16
-bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize)
+bool FlipperHTTP::streamBytes(const char *method, String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize)
 {
     // Not implemented for BW16
-    this->uart.print(F("[ERROR] stream_bytes not implemented for BW16."));
+    this->uart.print(F("[ERROR] streamBytes not implemented for BW16."));
     this->uart.print(method);
     this->uart.print(url);
     this->uart.print(payload);
@@ -340,7 +320,7 @@ bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, c
     return false;
 }
 #else
-bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize)
+bool FlipperHTTP::streamBytes(const char *method, String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize)
 {
     HTTPClient http;
 
@@ -369,7 +349,7 @@ bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, c
 
             WiFiClient *stream = http.getStreamPtr();
 
-            size_t freeHeap = free_heap();        // Check available heap memory before starting
+            size_t freeHeap = storage.freeHeap(); // Check available heap memory before starting
             const size_t minHeapThreshold = 1024; // Minimum heap space to avoid overflow
             if (freeHeap < minHeapThreshold)
             {
@@ -408,7 +388,7 @@ bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, c
                 }
                 delay(1); // Yield control to the system
             }
-            freeHeap = free_heap(); // Check available heap memory after processing
+            freeHeap = storage.freeHeap(); // Check available heap memory after processing
             if (freeHeap < minHeapThreshold)
             {
                 this->uart.println(F("[ERROR] Not enough memory to continue processing the response."));
@@ -459,7 +439,7 @@ bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, c
                         WiFiClient *stream = http.getStreamPtr();
 
                         // Check available heap memory before starting
-                        size_t freeHeap = free_heap();
+                        size_t freeHeap = storage.freeHeap();
                         if (freeHeap < 1024)
                         {
                             this->uart.println(F("[ERROR] Not enough memory to start processing the response."));
@@ -499,7 +479,7 @@ bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, c
                             delay(1); // Yield control to the system
                         }
 
-                        freeHeap = free_heap(); // Check available heap memory after processing
+                        freeHeap = storage.freeHeap(); // Check available heap memory after processing
                         if (freeHeap < 1024)
                         {
                             this->uart.println(F("[ERROR] Not enough memory to continue processing the response."));
@@ -543,7 +523,7 @@ bool FlipperHTTP::stream_bytes(const char *method, String url, String payload, c
 }
 #endif
 
-bool FlipperHTTP::read_serial_settings(String receivedData, bool connectAfterSave)
+bool FlipperHTTP::readSerialSettings(String receivedData, bool connectAfterSave)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, receivedData);
@@ -556,7 +536,7 @@ bool FlipperHTTP::read_serial_settings(String receivedData, bool connectAfterSav
     }
 
     // Extract values from JSON
-    if (doc.containsKey("ssid") && doc.containsKey("password"))
+    if (doc["ssid"] && doc["password"])
     {
         strncpy(loaded_ssid, doc["ssid"], sizeof(loaded_ssid));     // save ssid
         strncpy(loaded_pass, doc["password"], sizeof(loaded_pass)); // save password
@@ -568,7 +548,7 @@ bool FlipperHTTP::read_serial_settings(String receivedData, bool connectAfterSav
     }
 
     // Save to storage
-    if (!this->save_wifi(receivedData))
+    if (!this->saveWiFi(receivedData))
     {
         this->uart.println(F("[ERROR] Failed to save settings to file."));
         return false;
@@ -583,130 +563,6 @@ bool FlipperHTTP::read_serial_settings(String receivedData, bool connectAfterSav
     return true;
 }
 
-// Upload bytes to server
-#ifdef BOARD_BW16
-bool FlipperHTTP::upload_bytes(String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize)
-{
-    // Not implemented for BW16 yet
-    this->uart.print(F("[ERROR] upload_bytes not implemented for BW16."));
-    this->uart.print(url);
-    this->uart.print(payload);
-    for (int i = 0; i < headerSize; i++)
-    {
-        this->uart.print(headerKeys[i]);
-        this->uart.print(headerValues[i]);
-    }
-    this->uart.println();
-    return false;
-}
-#else
-bool FlipperHTTP::upload_bytes(String url, String payload, const char *headerKeys[], const char *headerValues[], int headerSize)
-{
-    HTTPClient http;
-
-    // set headers
-    http.collectHeaders(headerKeys, headerSize);
-
-    // begin connection
-    if (http.begin(this->client, url))
-    {
-        // add headers
-        for (int i = 0; i < headerSize; i++)
-        {
-            http.addHeader(headerKeys[i], headerValues[i]);
-        }
-
-        // send the request
-        int httpCode = http.POST(payload);
-        int len = http.getSize(); // Get the response content length
-        char headerResponse[256];
-        if (httpCode > 0)
-        {
-            snprintf(headerResponse, sizeof(headerResponse), "[POST/SUCCESS]{\"Status-Code\":%d,\"Content-Length\":%d}", httpCode, len);
-            this->uart.println(headerResponse);
-
-            WiFiClient *stream = http.getStreamPtr();
-
-            // send incoming serial data to the server
-            if (this->uart.available() > 0)
-            {
-                uint8_t buffer[128];
-                size_t len;
-                while ((len = this->uart.readBytes(buffer, sizeof(buffer))) > 0)
-                {
-                    stream->write(buffer, len);
-                }
-                this->uart.flush();
-            }
-
-            // end the request
-            http.end();
-            // Flush the serial buffer to ensure all data is sent
-            this->uart.flush();
-            this->uart.println();
-            this->uart.println(F("[POST/END]"));
-            return true;
-        }
-        else
-        {
-            if (httpCode != -1) // HTTPC_ERROR_CONNECTION_FAILED
-            {
-                snprintf(headerResponse, sizeof(headerResponse), "[ERROR] POST Request Failed, error: %s", http.errorToString(httpCode).c_str());
-                this->uart.println(headerResponse);
-            }
-            else // certification failed?
-            {
-                // send request without SSL
-                http.end();
-                this->client.setInsecure();
-                if (http.begin(this->client, url))
-                {
-                    for (int i = 0; i < headerSize; i++)
-                    {
-                        http.addHeader(headerKeys[i], headerValues[i]);
-                    }
-                    int newCode = http.POST(payload);
-                    int len = http.getSize(); // Get the response content length
-                    if (newCode > 0)
-                    {
-                        snprintf(headerResponse, sizeof(headerResponse), "[POST/SUCCESS]{\"Status-Code\":%d,\"Content-Length\":%d}", newCode, len);
-                        this->uart.println(headerResponse);
-
-                        WiFiClient *stream = http.getStreamPtr();
-
-                        // send incoming serial data to the server
-                        while (this->uart.available() > 0)
-                        {
-                            stream->write(this->uart.read());
-                        }
-
-                        // end the request
-                        http.end();
-                        // Flush the serial buffer to ensure all data is sent
-                        this->uart.flush();
-                        this->uart.println();
-                        this->uart.println(F("[POST/END]"));
-                        this->client.setCACert(root_ca);
-                        return true;
-                    }
-                    else
-                    {
-                        this->client.setCACert(root_ca);
-                        snprintf(headerResponse, sizeof(headerResponse), "[ERROR] POST Request Failed, error: %s", http.errorToString(newCode).c_str());
-                        this->uart.println(headerResponse);
-                    }
-                }
-            }
-        }
-        http.end();
-    }
-    else
-    {
-        this->uart.println(F("[ERROR] Unable to connect to the server."));
-    }
-    return false;
-}
-#endif
 // Main loop for flipper-http.ino that handles all of the commands
 void FlipperHTTP::loop()
 {
@@ -717,13 +573,13 @@ void FlipperHTTP::loop()
         this->led.on();
 
         // Read the incoming serial data until newline
-        String _data = this->uart.read_serial_line();
+        String _data = this->uart.readSerialLine();
 
         // send to ESP32
         this->uart_2.println(_data);
 
         // Wait for response from ESP32
-        String _response = this->uart_2.read_serial_line();
+        String _response = this->uart_2.readSerialLine();
 
         // Send response back to Flipper
         this->uart.println(_response);
@@ -735,7 +591,7 @@ void FlipperHTTP::loop()
         this->led.on();
 
         // Read the incoming serial data until newline
-        String _data = this->uart_2.read_serial_line();
+        String _data = this->uart_2.readSerialLine();
 
         // send to Flipper
         this->uart.println(_data);
@@ -747,7 +603,7 @@ void FlipperHTTP::loop()
     if (this->uart.available())
     {
         // Read the incoming serial data until newline
-        String _data = this->uart.read_serial_line();
+        String _data = this->uart.readSerialLine();
 
         if (_data.length() == 0)
         {
@@ -760,7 +616,7 @@ void FlipperHTTP::loop()
         // print the available commands
         if (_data.startsWith("[LIST]"))
         {
-            this->uart.println(F("[LIST], [PING], [REBOOT], [WIFI/IP], [WIFI/SCAN], [WIFI/SAVE], [WIFI/CONNECT], [WIFI/DISCONNECT], [WIFI/LIST], [GET], [GET/HTTP], [POST/HTTP], [PUT/HTTP], [DELETE/HTTP], [GET/BYTES], [POST/BYTES], [PARSE], [PARSE/ARRAY], [LED/ON], [LED/OFF], [IP/ADDRESS]"));
+            this->uart.println(F("[LIST], [PING], [REBOOT], [WIFI/IP], [WIFI/SCAN], [WIFI/SAVE], [WIFI/CONNECT], [WIFI/DISCONNECT], [WIFI/LIST], [GET], [GET/HTTP], [POST/HTTP], [PUT/HTTP], [DELETE/HTTP], [GET/BYTES], [POST/BYTES], [PARSE], [PARSE/ARRAY], [LED/ON], [LED/OFF], [IP/ADDRESS], [WIFI/AP], [VERSION], [DEAUTH]"));
         }
         // handle [LED/ON] command
         else if (_data.startsWith("[LED/ON]"))
@@ -772,15 +628,20 @@ void FlipperHTTP::loop()
         {
             this->use_led = false;
         }
+        // handle [VERSION] command
+        else if (_data.startsWith("[VERSION]"))
+        {
+            this->uart.println(FLIPPER_HTTP_VERSION);
+        }
         // handle [IP/ADDRESS] command (local IP)
         else if (_data.startsWith("[IP/ADDRESS]"))
         {
-            this->uart.println(this->wifi.device_ip());
+            this->uart.println(this->wifi.deviceIP());
         }
         // handle [WIFI/IP] command ip of connected wifi
         else if (_data.startsWith("[WIFI/IP]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -801,13 +662,16 @@ void FlipperHTTP::loop()
                 this->led.off();
                 return;
             }
-            if (!doc.containsKey("origin"))
+            if (!doc["origin"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain origin."));
                 this->led.off();
                 return;
             }
             this->uart.println(doc["origin"].as<String>());
+            this->uart.flush();
+            this->uart.println();
+            this->uart.println(F("[GET/END]"));
         }
         // Ping/Pong to see if board/flipper is connected
         else if (_data.startsWith("[PING]"))
@@ -821,7 +685,7 @@ void FlipperHTTP::loop()
 #if defined(BOARD_PICO_W) || defined(BOARD_PICO_2W) || defined(BOARD_VGM)
             rp2040.reboot();
 #elif defined(BOARD_BW16)
-            // not supported yet
+            ota_platform_reset();
 #else
             ESP.restart();
 #endif
@@ -838,7 +702,7 @@ void FlipperHTTP::loop()
         // Handle Wifi list command
         else if (_data.startsWith("[WIFI/LIST]"))
         {
-            String fileContent = file_read(settingsFilePath);
+            String fileContent = storage.read(settingsFilePath);
             this->uart.println(fileContent);
             this->uart.flush();
         }
@@ -850,7 +714,7 @@ void FlipperHTTP::loop()
             jsonData.trim(); // Remove any leading/trailing whitespace
 
             // Parse and save the settings
-            if (this->read_serial_settings(jsonData, true))
+            if (this->readSerialSettings(jsonData, true))
             {
                 this->uart.println(F("[SUCCESS] Wifi settings saved."));
             }
@@ -863,7 +727,7 @@ void FlipperHTTP::loop()
         else if (_data == "[WIFI/CONNECT]")
         {
             // Check if WiFi is already connected
-            if (!this->wifi.is_connected())
+            if (!this->wifi.isConnected())
             {
                 // Attempt to connect to Wifi
                 if (this->wifi.connect(loaded_ssid, loaded_pass))
@@ -890,7 +754,7 @@ void FlipperHTTP::loop()
         else if (_data.startsWith("[GET]"))
         {
 
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to WiFi. Failed to reconnect."));
                 this->led.off();
@@ -917,7 +781,7 @@ void FlipperHTTP::loop()
         // Handle [GET/HTTP] command
         else if (_data.startsWith("[GET/HTTP]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -939,7 +803,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("url"))
+            if (!doc["url"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url."));
                 this->led.off();
@@ -952,7 +816,7 @@ void FlipperHTTP::loop()
             const char *headerValues[10];
             int headerSize = 0;
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair header : headers)
@@ -980,7 +844,7 @@ void FlipperHTTP::loop()
         // Handle [POST/HTTP] command
         else if (_data.startsWith("[POST/HTTP]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -1002,7 +866,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("url") || !doc.containsKey("payload"))
+            if (!doc["url"] || !doc["payload"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url or payload."));
                 this->led.off();
@@ -1016,7 +880,7 @@ void FlipperHTTP::loop()
             const char *headerValues[10];
             int headerSize = 0;
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair header : headers)
@@ -1044,7 +908,7 @@ void FlipperHTTP::loop()
         // Handle [PUT/HTTP] command
         else if (_data.startsWith("[PUT/HTTP]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -1066,7 +930,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("url") || !doc.containsKey("payload"))
+            if (!doc["url"] || !doc["payload"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url or payload."));
                 this->led.off();
@@ -1080,7 +944,7 @@ void FlipperHTTP::loop()
             const char *headerValues[10];
             int headerSize = 0;
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair header : headers)
@@ -1108,7 +972,7 @@ void FlipperHTTP::loop()
         // Handle [DELETE/HTTP] command
         else if (_data.startsWith("[DELETE/HTTP]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -1130,7 +994,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("url") || !doc.containsKey("payload"))
+            if (!doc["url"] || !doc["payload"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url or payload."));
                 this->led.off();
@@ -1144,7 +1008,7 @@ void FlipperHTTP::loop()
             const char *headerValues[10];
             int headerSize = 0;
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair header : headers)
@@ -1173,7 +1037,7 @@ void FlipperHTTP::loop()
         // Handle [GET/BYTES]
         else if (_data.startsWith("[GET/BYTES]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -1195,7 +1059,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("url"))
+            if (!doc["url"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url."));
                 this->led.off();
@@ -1208,7 +1072,7 @@ void FlipperHTTP::loop()
             const char *headerValues[10];
             int headerSize = 0;
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair header : headers)
@@ -1220,7 +1084,7 @@ void FlipperHTTP::loop()
             }
 
             // GET request
-            if (!this->stream_bytes("GET", url, "", headerKeys, headerValues, headerSize))
+            if (!this->streamBytes("GET", url, "", headerKeys, headerValues, headerSize))
             {
                 this->uart.println(F("[ERROR] GET request failed or returned empty data."));
             }
@@ -1228,7 +1092,7 @@ void FlipperHTTP::loop()
         // handle [POST/BYTES]
         else if (_data.startsWith("[POST/BYTES]"))
         {
-            if (!this->wifi.is_connected() && !this->wifi.connect(loaded_ssid, loaded_pass))
+            if (!this->wifi.isConnected() && !this->wifi.connect(loaded_ssid, loaded_pass))
             {
                 this->uart.println(F("[ERROR] Not connected to Wifi. Failed to reconnect."));
                 this->led.off();
@@ -1250,7 +1114,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("url") || !doc.containsKey("payload"))
+            if (!doc["url"] || !doc["payload"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url or payload."));
                 this->led.off();
@@ -1264,7 +1128,7 @@ void FlipperHTTP::loop()
             const char *headerValues[10];
             int headerSize = 0;
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair header : headers)
@@ -1276,7 +1140,7 @@ void FlipperHTTP::loop()
             }
 
             // POST request
-            if (!this->stream_bytes("POST", url, payload, headerKeys, headerValues, headerSize))
+            if (!this->streamBytes("POST", url, payload, headerKeys, headerValues, headerSize))
             {
                 this->uart.println(F("[ERROR] POST request failed or returned empty data."));
             }
@@ -1299,7 +1163,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("key") || !doc.containsKey("json"))
+            if (!doc["key"] || !doc["json"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain key or json."));
                 this->led.off();
@@ -1308,7 +1172,7 @@ void FlipperHTTP::loop()
             String key = doc["key"];
             JsonObject json = doc["json"];
 
-            if (json.containsKey(key))
+            if (json[key])
             {
                 this->uart.println(json[key].as<String>());
             }
@@ -1335,7 +1199,7 @@ void FlipperHTTP::loop()
             }
 
             // Extract values from JSON
-            if (!doc.containsKey("key") || !doc.containsKey("index") || !doc.containsKey("json"))
+            if (!doc["key"] || !doc["index"] || !doc["json"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain key, index, or json."));
                 this->led.off();
@@ -1345,7 +1209,7 @@ void FlipperHTTP::loop()
             int index = doc["index"];
             JsonArray json = doc["json"];
 
-            if (json[index].containsKey(key))
+            if (json[index][key])
             {
                 this->uart.println(json[index][key].as<String>());
             }
@@ -1361,8 +1225,8 @@ void FlipperHTTP::loop()
             String jsonData = _data.substring(strlen("[SOCKET/START]"));
             jsonData.trim();
 
-            // Create a DynamicJsonDocument with an appropriate size
-            DynamicJsonDocument doc(1024);
+            // Create a JsonDocument with an appropriate size
+            JsonDocument doc;
             DeserializationError error = deserializeJson(doc, jsonData);
 
             if (error)
@@ -1373,7 +1237,7 @@ void FlipperHTTP::loop()
             }
 
             // Ensure that the JSON contains a "url" and "port"
-            if (!doc.containsKey("url"))
+            if (!doc["url"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain url."));
                 this->led.off();
@@ -1381,7 +1245,7 @@ void FlipperHTTP::loop()
             }
             String fullUrl = doc["url"].as<String>();
 
-            if (!doc.containsKey("port"))
+            if (!doc["port"])
             {
                 this->uart.println(F("[ERROR] JSON does not contain port."));
                 this->led.off();
@@ -1422,7 +1286,7 @@ void FlipperHTTP::loop()
             const char *headerKeys[10];
             const char *headerValues[10];
 
-            if (doc.containsKey("headers"))
+            if (doc["headers"])
             {
                 JsonObject headers = doc["headers"];
                 for (JsonPair kv : headers)
@@ -1459,7 +1323,7 @@ void FlipperHTTP::loop()
                 return;
             }
 
-            Serial.println(F("[SOCKET/CONNECTED]"));
+            this->uart.println(F("[SOCKET/CONNECTED]"));
 
             // Check if a message is available from the server:
             if (ws.parseMessage() > 0)
@@ -1478,7 +1342,7 @@ void FlipperHTTP::loop()
                 if (this->uart.available() > 0)
                 {
                     // Read the incoming serial data until newline
-                    uartMessage = this->uart.read_serial_line();
+                    uartMessage = this->uart.readSerialLine();
                     ws.beginMessage(TYPE_TEXT);
                     ws.print(uartMessage);
                     ws.endMessage();
@@ -1495,7 +1359,98 @@ void FlipperHTTP::loop()
 
             // Close the WebSocket connection
             ws.stop();
-            Serial.println(F("[SOCKET/STOPPED]"));
+            this->uart.println(F("[SOCKET/STOPPED]"));
+        }
+        // [WIFI/AP] AP Mode
+        else if (_data.startsWith("[WIFI/AP]"))
+        {
+            // Extract the JSON by removing the command part
+            String jsonData = _data.substring(strlen("[WIFI/AP]"));
+            jsonData.trim();
+
+            JsonDocument doc;
+            DeserializationError error = deserializeJson(doc, jsonData);
+
+            if (error)
+            {
+                this->uart.print(F("[ERROR] Failed to parse JSON."));
+                this->led.off();
+                return;
+            }
+
+            // Extract values from JSON
+            if (!doc["ssid"])
+            {
+                this->uart.println(F("[ERROR] JSON does not contain ssid."));
+                this->led.off();
+                return;
+            }
+
+            String ssid = doc["ssid"];
+
+            WiFiAP ap(&this->uart, &this->wifi);
+
+            if (!ap.start(ssid.c_str()))
+            {
+                this->led.off();
+                return; // error is handled by class
+            }
+
+            this->uart.println(F("[AP/CONNECTED]"));
+            ap.run();
+            this->uart.println(F("[AP/DISCONNECTED]"));
+        }
+        // [DEAUTH] Deauth command
+        else if (_data.startsWith("[DEAUTH]"))
+        {
+            // Extract the JSON by removing the command part
+            String jsonData = _data.substring(strlen("[DEAUTH]"));
+            jsonData.trim();
+
+            JsonDocument doc;
+            DeserializationError error = deserializeJson(doc, jsonData);
+
+            if (error)
+            {
+                this->uart.print(F("[ERROR] Failed to parse JSON."));
+                this->led.off();
+                return;
+            }
+
+            // Extract values from JSON
+            if (!doc["ssid"])
+            {
+                this->uart.println(F("[ERROR] JSON does not contain ssid"));
+                this->led.off();
+                return;
+            }
+
+            String ssid = doc["ssid"];
+
+            WiFiDeauth deauther;
+            this->uart.println(F("[DEAUTH/STARTING]"));
+
+            if (!deauther.start(ssid.c_str()))
+            {
+                this->led.off();
+                return; // error is handled by class
+            }
+
+            this->uart.println(F("[DEAUTH/STARTED]"));
+
+            String uartMessage = "";
+            while (uartMessage != "[DEAUTH/STOP]")
+            {
+                // Check if there's incoming serial data
+                if (this->uart.available() > 0)
+                {
+                    // Read the incoming serial data until newline
+                    uartMessage = this->uart.readSerialLine();
+                }
+                deauther.update();
+            }
+            deauther.stop();
+            this->uart.println(F("[DEAUTH/STOPPED]"));
         }
 
         this->led.off();
@@ -1503,4 +1458,4 @@ void FlipperHTTP::loop()
 #endif
 }
 
-} // namespace FlipperHTTP
+}

@@ -1,7 +1,7 @@
 #pragma once
 #include "Arduino.h"
 
-namespace FlipperHTTP
+namespace FlipperHttp
 {
 
 // all certs from https://curl.se/docs/caextract.html
@@ -3180,4 +3180,4 @@ SwdLZrWeqrqgHkHZAXQ6bkU6iYAZezKYVWOr62Nuk22rGwlgMU4=
 -----END CERTIFICATE-----
 )EOF";
 
-} // namespace FlipperHTTP
+}

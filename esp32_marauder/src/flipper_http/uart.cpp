@@ -1,6 +1,6 @@
 #include "uart.h"
 
-namespace FlipperHTTP
+namespace FlipperHttp
 {
 
 size_t UART::available()
@@ -29,7 +29,7 @@ void UART::begin(uint32_t baudrate)
 #endif
 }
 
-void UART::clear_buffer()
+void UART::clearBuffer()
 {
     while (this->available() > 0)
     {
@@ -106,7 +106,34 @@ uint8_t UART::readBytes(uint8_t *buffer, size_t size)
 #endif
 }
 
-String UART::read_serial_line()
+String UART::readStringUntilString(const String &terminator, uint32_t timeout)
+{
+    String receivedData;
+    unsigned long startTime = millis();
+
+    while (millis() - startTime < timeout)
+    {
+        if (this->available() > 0)
+        {
+            char c = (char)read();
+            receivedData += c;
+
+            if (receivedData.endsWith(terminator))
+            {
+                receivedData.remove(receivedData.length() - terminator.length());
+                break;
+            }
+        }
+        else
+        {
+            delay(1);
+        }
+    }
+    receivedData.trim();
+    return receivedData;
+}
+
+String UART::readSerialLine()
 {
     String receivedData = "";
 
@@ -147,7 +174,7 @@ void UART::set_pins(uint8_t tx_pin, uint8_t rx_pin)
 }
 #endif
 
-void UART::set_timeout(uint32_t timeout)
+void UART::setTimeout(uint32_t timeout)
 {
 #if defined(BOARD_PICO_W) || defined(BOARD_PICO_2W) || defined(BOARD_VGM)
     this->serial->setTimeout(timeout);
@@ -169,4 +196,4 @@ void UART::write(const uint8_t *buffer, size_t size)
 #endif
 }
 
-} // namespace FlipperHTTP
+}

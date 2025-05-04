@@ -18,6 +18,7 @@
 // #define BOARD_VGM 8          // Raspberry Pi Pico             Raspberry Pi Pico/RP2040/RP2350 by Earl Philhower
 // #define BOARD_ESP32_C3 9     // ESP32C3 Dev Module            esp32 by Espressif Systems
 // #define BOARD_BW16 10        // AI-Thinker BW16 (RTL8720DN)   Realtek Ameba Boards (32-bits ARM Cortex-M33 @200MHz) by Realtek
+// #define BOARD_ESP32_C5 11    // ESP32C5 Dev Module            esp32 by Espressif Systems
 
 /*
 - ESP32: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_dev_index.json
